@@ -20,12 +20,16 @@ library(stringr)
 library(glue)
 library(MESS)
 library(pracma)
+library(igraph)
+library(ggraph)
+library(tidygraph)
 
 results_dir <- "D:\\Bureau avant\\EcoHab-project\\Results"
 
 activity_file_1h <- file.path(results_dir, "activity", "activity_bin_1.00_h.csv")
 activity_file_1d <- file.path(results_dir, "activity", "activity_bin_24.00_h.csv")
 activity_file_1w <- file.path(results_dir, "activity", "activity_bin_168.00_h.csv")
+activity_file_10s <- file.path(results_dir, "activity", "activity_bin_0.00_h.csv")
 
 solitude_file <- file.path(results_dir, "solitude", "mouse_alone_.csv")
 
@@ -133,6 +137,104 @@ list_to_df_long <- function(df_list) {
 }
 ```
 
+## Social networks
+
+### Undirected
+
+```{r}
+make_social_network <- function(mat, title = "Social Network", threshold = 0) {
+  # Fuerza conversión a matriz normal
+  mat <- as.matrix(mat)
+
+  # Reemplaza NA por 0
+  mat[is.na(mat)] <- 0
+  
+  # Quita la diagonal
+  diag(mat) <- 0
+  
+  # Crea grafo
+  g <- graph_from_adjacency_matrix(mat, mode = "undirected", weighted = TRUE, diag = FALSE)
+  
+  g <- delete_edges(g, E(g)[weight <= threshold])
+  g <- delete_vertices(g, degree(g) == 0)
+
+  g_tbl <- as_tbl_graph(g)
+
+  p <- ggraph(g_tbl, layout = "circle") +
+    geom_edge_link(aes(width = weight), alpha = 0.7, color = "steelblue") +
+    geom_node_point(size = 6, color = "tomato") +
+    geom_node_text(aes(label = name), repel = TRUE) +
+    scale_edge_width(range = c(0.5, 3)) +
+    theme_void() +
+    labs(title = title)
+  
+  return(p)
+}
+
+```
+
+### Directed
+
+```{r}
+make_social_network_directed <- function(mat, title = "Directed Social Network", threshold = 0) {
+  
+  mat[is.na(mat)] <- 0
+  diag(mat) <- 0  # Quitar auto-conexiones
+  
+  # Crear grafo dirigido con pesos
+  g <- igraph::graph_from_adjacency_matrix(mat, mode = "directed", weighted = TRUE, diag = FALSE)
+  
+  # Filtrar edges con peso bajo
+  g <- igraph::delete_edges(g, E(g)[weight <= threshold])
+  
+  # Quitar nodos aislados
+  g <- igraph::delete_vertices(g, degree(g, mode = "all") == 0)
+  
+  # Convertir a tidygraph
+  g_tbl <- tidygraph::as_tbl_graph(g)
+  
+  # Plot con ggraph
+  p <- ggraph::ggraph(g_tbl, layout = "circle") +
+    ggraph::geom_edge_fan(aes(width = weight), arrow = grid::arrow(length = unit(4, 'mm')), end_cap = ggraph::circle(3, 'mm'), alpha = 0.8, color = "steelblue") +
+    ggraph::geom_node_point(size = 6, color = "tomato") +
+    ggraph::geom_node_text(aes(label = name), repel = TRUE) +
+    scale_edge_width(range = c(0.5, 3)) +
+    theme_void() +
+    labs(title = title)
+  
+  return(p)
+}
+
+```
+
+### Pairs
+
+```{r}
+make_social_network_directed_pairs <- function(mat, title = "Social Network Directed", threshold = 0) {
+  mat[is.na(mat)] <- 0
+  diag(mat) <- 0
+  
+  g <- graph_from_adjacency_matrix(mat, mode = "directed", weighted = TRUE, diag = FALSE)
+  g <- delete_edges(g, E(g)[weight <= threshold])
+  g <- delete_vertices(g, degree(g, mode = "all") == 0)
+  g_tbl <- as_tbl_graph(g)
+  
+  p <- ggraph(g_tbl, layout = "fr") +
+    geom_edge_fan(aes(width = weight, start_cap = label_rect(node1.name), end_cap = label_rect(node2.name)),
+                  arrow = arrow(length = unit(3, 'mm'), type = "closed"), 
+                  end_shape = "circle", 
+                  show.legend = TRUE, 
+                  color = "steelblue", alpha = 0.7) +
+    geom_node_point(size = 6, color = "tomato") +
+    geom_node_text(aes(label = name), repel = TRUE) +
+    scale_edge_width(range = c(0.5, 3)) +
+    theme_void() +
+    labs(title = title)
+  
+  return(p)
+}
+```
+
 ## Graphic creation
 
 ```{r}
@@ -169,14 +271,14 @@ analyze_df_long <- function(df_long, type = c("total", "matrix", "general"),
 
     # Crear título dinámico
     title_text <- paste0(
-      "Promedio por mouse y grupo",
+      "",
       if (!is.null(source_filter)) paste0(" (source = ", source_filter, ")") else "",
       "\nGrupos: ", paste(engroup, collapse = ", ")
     )
 
     p <- ggplot(summary_df, aes(x = mouse, y = mean_value, fill = group)) +
       geom_col(position = position_dodge()) +
-      labs(title = title_text, y = "Promedio value", x = "Mouse") +
+      labs(title = title_text, y = "Mean value", x = "Mouse") +
       theme_minimal()
 
     return(p)
@@ -197,11 +299,16 @@ else if(type == "matrix") {
     group_by(mouse, zone) %>%
     summarize(mean_value = mean(value, na.rm = TRUE), .groups = "drop")%>%
     arrange(zone, mouse)
+  
+  max_val <- max(abs(heat_avg$mean_value), na.rm = TRUE)
 
   p1 <- ggplot(heat_avg, aes(x = zone, y = mouse, fill = mean_value)) +
     geom_tile() +
-    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-    labs(title = "Heatmap promedio value por mouse y zone", x = "Zone", y = "Mouse") +
+     scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", midpoint = 0,
+    limits = c(-max_val, max_val)
+  )  +
+    labs(title = "Heatmap mean value per mouse", x = "Zone", y = "Mouse") +
     theme_minimal()
 
   # Slopes como antes (media de derivada por mouse y zona)
@@ -220,30 +327,64 @@ else if(type == "matrix") {
   slope_avg <- slopes %>%
     group_by(zone) %>%
     summarize(mean_slope = mean(slope, na.rm = TRUE), .groups = "drop")
+  
+    max_slope <- max(abs(slopes$slope), na.rm = TRUE)
 
   p2 <- ggplot(slope_avg, aes(x = zone, y = mean_slope, fill = mean_slope)) +
     geom_col() +
-    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-    labs(title = "Slope promedio por zone", x = "Zone", y = "Slope") +
+    scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", midpoint = 0,
+    limits = c(-max_slope, max_slope)
+  ) +
+    labs(title = "Mean Slope per bean", x = "Zone", y = "Slope") +
     theme_minimal()
+  
   p3 <- ggplot(slopes, aes(x = zone, y = mouse, fill = slope)) +
   geom_tile() +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-  labs(title = "Heatmap de slopes por mouse y zone", x = "Zone", y = "Mouse") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", midpoint = 0,
+    limits = c(-max_slope, max_slope)
+  ) +
+  labs(title = "Slopes Heatmap per mouse & bean", x = "Zone", y = "Mouse") +
   theme_minimal()
+  
+  slope_matrix <- slopes %>%
+  pivot_wider(names_from = zone, values_from = slope) %>%
+  column_to_rownames("mouse") %>%
+  as.matrix()
+
+  ## Matriz 2: value_matrix (mouse x zone, valores = mean_value)
+  value_matrix <- heat_avg %>%
+  pivot_wider(names_from = zone, values_from = mean_value) %>%
+  column_to_rownames("mouse") %>%
+  as.matrix()
+
+  net_plot_slope <- make_social_network(slope_matrix, title = "Social Network - Slopes")
+  net_plot_values <- make_social_network(value_matrix, title = "Social Network - Mean Values")
+
 
   return(list(
   heatmap_avg = p1,
-  slope_heatmap = p3,  # 🆕 este es el nuevo
+  slope_heatmap = p3,
   slope_plot = p2,
-  slopes = slopes
-    ))
+  slopes = slopes,
+  net_slopes = net_plot_slope,
+  net_values = net_plot_values
+))
+
 }
  else if(type == "general") {
     # 3. Grafico general: lineas x zone, y value, linea para cada mouse, filtrado por source
+   max_shapes <- 26
+   unique_mice <- unique(df_long$mouse)
+   shapes <- rep(0:(max_shapes - 1), length.out = length(unique_mice))
+   shape_values <- setNames(shapes, unique_mice)
+
     
-    p <- ggplot(df_long, aes(x = zone, y = value, color = mouse, group = mouse)) +
-      geom_line() + geom_point() +
+    p <- ggplot(df_long, aes(x = zone, y = value, color = mouse, shape = mouse, group = mouse)) +
+      geom_line() +
+      geom_point(size = 2) +
+      scale_shape_manual(values = shape_values) +  # <--- clave para mantener símbolos fijos
       labs(title = paste("General plot, source =", source_filter), x = "Zone", y = "Value") +
       theme_minimal()
     
@@ -412,6 +553,55 @@ reshape_without_source <- function(df, name) {
 }
 ```
 
+## Patrolling style
+
+```{r}
+
+library(qgraph)
+
+fit_markov_qgraph <- function(sequence, title = "Transiciones de Markov") {
+  # Obtener estados únicos y ordenarlos
+  states <- unique(sequence)
+  n <- length(states)
+
+  # Inicializar matriz de transición
+  trans_counts <- matrix(0, nrow = n, ncol = n, dimnames = list(states, states))
+
+  # Contar transiciones
+  for (i in seq_len(length(sequence) - 1)) {
+    from <- sequence[i]
+    to <- sequence[i + 1]
+    trans_counts[from, to] <- trans_counts[from, to] + 1
+  }
+
+  # Calcular probabilidades
+  trans_probs <- trans_counts / rowSums(trans_counts)
+  trans_probs[is.na(trans_probs)] <- 0  # si hay filas vacías
+  
+  trans_scaled <- sqrt(trans_probs)
+
+  g <- qgraph(trans_scaled,
+            layout = "spring",
+            edge.labels = TRUE,
+            edge.label.cex = 1.2,
+            edge.color = "black",
+            arrows = TRUE,
+            asize = 5,
+            vsize = 10,
+            color = "tomato",
+            label.cex = 1.5,
+            minimum = 0.01,  # fuerza mínima para evitar líneas invisibles
+            title = title)
+
+  # Devolver todo en una lista
+  return(list(
+    transition_matrix = trans_probs,
+    graph_object = g
+  ))
+}
+
+```
+
 # Activity
 
 ## Df creation
@@ -432,21 +622,21 @@ df_wide <- left_join(df_wide, reshape_with_time(df_long, "activity_168h"), by = 
 
 ## General plotting
 
-### 1h - Cage preference 
+### 1h - Cage preference
 
 ```{r}
 df_list <- split_activity_file(activity_file_1h)
 df_long <- list_to_df_long(df_list)
 
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage A")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage B")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage C")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage D")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage A(toys)")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage B(water)")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage C(nest)")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Number of visits to cage D(food)")
 
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage A")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage B")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage C")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage D")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage A(toys)")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage B(water)")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage C(nest)")
+analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Total time (sec) in cage D(food)")
 ```
 
 ### 24 h - 1 day
@@ -455,15 +645,15 @@ analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filte
 df_list <- split_activity_file(activity_file_1d)
 df_long <- list_to_df_long(df_list)
 
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage A")
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage B")
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage C")
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage D")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage A(toys)")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage B(water)")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage C(nest)")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage D(food)")
 
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage A")
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage B")
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage C")
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage D")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage A(toys)")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage B(water)")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage C(nest)")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage D(food)")
 ```
 
 ### 1 week
@@ -472,15 +662,15 @@ analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in ca
 df_list <- split_activity_file(activity_file_1w)
 df_long <- list_to_df_long(df_list)
 
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage A")
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage B")
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage C")
-analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage D")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage A(toys)")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage B(water)")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage C(nest)")
+analyze_df_long(df_long, type="general", source_filter = "Number of visits to cage D(food)")
 
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage A")
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage B")
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage C")
-analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage D")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage A(toys)")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage B(water)")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage C(nest)")
+analyze_df_long(df_long, type="general", source_filter = "Total time (sec) in cage D(food)")
 ```
 
 ## Specific plots
@@ -494,7 +684,7 @@ df_long <- list_to_df_long(df_list)
 df_long <- df_long %>%
   rename(time = `time [h]`) %>%
   mutate(
-    cage = str_extract(source, "cage [A-D]"),
+    cage = str_match(source, "cage\\s+(\\S+)")[,2],
     cage = str_remove(cage, "cage "),
   ) %>%
   filter(!is.na(cage))
@@ -523,20 +713,27 @@ df_time_summary <- df_time %>%
   group_by(mouse, zone, cage) %>%
   summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
 
-  max_shapes <- 26
+max_shapes <- 26
 
-  # Crear vector dinámico de shapes, reciclando si hay más mouse que shapes
-  shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mouse)))
-  
-  # Crear named vector para que ggplot reconozca cada mouse con un shape específico
-  mouse_levels <- df_time_summary %>% pull(mouse) %>% unique()
-  shape_values <- setNames(shapes, mouse_levels)
+# Crear vector dinámico de shapes, reciclando si hay más mouse que shapes
+shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mouse)))
+
+# Crear named vector para que ggplot reconozca cada mouse con un shape específico
+mouse_levels <- df_time_summary %>% pull(mouse) %>% unique()
+shape_values <- setNames(shapes, mouse_levels)
 
 zones <- unique(df_filtered$zone)
 
 # Crear listas para guardar plots
 plots_visits <- list()
+values_visits <- df_visits_summary$value
+y_min_visits <- min(values_visits, na.rm = TRUE) * 0.9
+y_max_visits <- max(values_visits, na.rm = TRUE) * 1.1
+
 plots_time <- list()
+time_values_hours <- df_time_summary$value / 60
+y_min_time <- min(time_values_hours, na.rm = TRUE) * 0.9
+y_max_time <- max(time_values_hours, na.rm = TRUE) * 1.1
 
 for (z in zones) {
   # Visits
@@ -545,23 +742,64 @@ for (z in zones) {
     ggplot(aes(x = cage, y = value, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
-    labs(title = paste("Number of visits |", z), x = "Cage", y = "Mean visits") +
-    theme_minimal()
+    labs(title = paste("Number of visits per hour |", z), x = "Cage", y = "Mean visits") +
+    theme_minimal() +
+    coord_cartesian(ylim = c(y_min_visits, y_max_visits))
+  
 
   # Time
   p_time <- df_time_summary %>%
     filter(zone == z) %>%
-    ggplot(aes(x = cage, y = value, color = mouse, shape = mouse)) +
+    ggplot(aes(x = cage, y = value / 60, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
-    labs(title = paste("Time spent (sec) |", z), x = "Cage", y = "Mean time (sec)") +
-    theme_minimal()
+    labs(title = paste("Time spent (min) per hour |", z), x = "Cage", y = "Mean time (min)") +
+    theme_minimal()+
+    coord_cartesian(ylim = c(y_min_time, y_max_time))
   
   plots_visits[[z]] <- p_visits
   plots_time[[z]] <- p_time
 }
 grid.arrange(grobs = c(plots_visits, plots_time), ncol = 2)
 
+```
+
+## Patrolling style
+
+```{r}
+df_list <- split_activity_file(activity_file_10s)
+df_long <- list_to_df_long(df_list)
+
+filter(value > 0)
+
+# Extraer letra de la jaula desde la columna 'source'
+df <- df %>%
+  mutate(cage = str_sub(str_match(source, "cage\\s+(\\S+)")[,2], 1, 1))
+
+# Eliminar cualquier fila donde no se haya extraído la letra correctamente
+df <- df %>% filter(!is.na(cage))
+
+# Ordenar por ratón y tiempo
+df <- df %>% arrange(mouse, `time [h]`)
+
+# Expandir según número de visitas (para secuencia real de transiciones)
+df_seq <- df %>%
+  mutate(value = as.integer(round(value))) %>%  # redondea y convierte
+  uncount(weights = value)  # repite filas 'value' veces
+
+# Agrupar por ratón y crear lista de secuencias de visitas
+secuencias <- df_seq %>%
+  group_by(mouse) %>%
+  summarise(cages = list(cage), .groups = "drop")
+
+for (i in seq_len(nrow(secuencias))) {
+  seq_i <- secuencias$cages[[i]]  # secuencia del ratón i
+  res <- fit_markov_qgraph(seq_i,secuencias$mouse[i])
+  
+  print(secuencias$mouse[i])
+  print(res$transition_matrix)
+  print(res$graph_object)
+}
 ```
 
 # Solitude
@@ -581,10 +819,55 @@ df_wide <- left_join(df_wide, df_w , by = "mouse")
 df_list <- split_activity_file(solitude_file)
 df_long <- list_to_df_long_matrix(df_list)
 
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Mice alone in cage A")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Mice alone in cage B")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Mice alone in cage C")
-analyze_df_long(df_long, type="total", engroup = c("dark","light"), source_filter = "Mice alone in cage D")
+df_long <- df_long %>%
+  mutate(
+    cage = str_match(source, "cage\\s+(\\S+)")[,2],
+    cage = str_remove(cage, "cage "),
+  ) %>%
+  filter(!is.na(cage))
+
+# 2. Filtrar solo las variables de interés y crear columna métrica
+df_filtered <- df_long %>%
+  select(-source)  
+
+df_time <- df_filtered 
+
+# 5. Resumir promedios para tiempo
+df_time_summary <- df_time %>%
+  group_by(mouse, zone, cage) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+
+  max_shapes <- 26
+
+  # Crear vector dinámico de shapes, reciclando si hay más mouse que shapes
+  shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mouse)))
+  
+  # Crear named vector para que ggplot reconozca cada mouse con un shape específico
+  mouse_levels <- df_time_summary %>% pull(mouse) %>% unique()
+  shape_values <- setNames(shapes, mouse_levels)
+
+zones <- unique(df_filtered$zone)
+
+time_values_hours <- df_time_summary$value / 3600
+y_min <- min(time_values_hours, na.rm = TRUE) * 0.9
+y_max <- max(time_values_hours, na.rm = TRUE) * 1.1
+
+# Lista para los plots
+plots_time <- list()
+
+for (z in zones) {
+  p_time <- df_time_summary %>%
+    filter(zone == z) %>%
+    ggplot(aes(x = cage, y = value / 3600, color = mouse, shape = mouse)) +
+    geom_point(size = 3, position = position_jitter(width = 0.2)) +
+    scale_shape_manual(values = shape_values) +
+    labs(title = paste("Time spent alone (h) |", z), x = "Cage", y = "Total time (h)") +
+    theme_minimal() +
+    coord_cartesian(ylim = c(y_min, y_max))  # <--- ESCALA UNIFICADA
+  plots_time[[z]] <- p_time
+}
+
+grid.arrange(grobs = c(plots_visits, plots_time), ncol = 2)
 
 ```
 
@@ -608,7 +891,7 @@ df_wide <- left_join(df_wide, df_wide_all , by = "mouse")
 
 ## Own graphs
 
-```{r}
+```{r, fig.width=12, fig.height=8}
 df_list_sociability <- lapply(sociability_files, read.csv2,check.names = FALSE)
 df_long <- lapply(df_list_sociability, wide_to_long_sociab)
 
@@ -630,13 +913,16 @@ plots_matrix_list <- mapply(function(df, fname) {
 for (i in seq_along(plots_matrix_list)) {
   print(plots_matrix_list[[i]]$heatmap_avg)
   print(plots_matrix_list[[i]]$slope_heatmap)
+  print(plots_matrix_list[[i]]$net_values)
+  print(plots_matrix_list[[i]]$net_slopes)
 }
 
 ```
 
 ## Auto graphs
 
-```{r}
+```{r, fig.width=12, fig.height=8}
+
 for(dir in figs_sociability_dirs) {
   cat("Type:", dir, "\n")
   mostrar_png_2x2(dir)
@@ -649,7 +935,7 @@ for(dir in figs_sociability_dirs) {
 
 ```{r}
 df_wide_list <- lapply(followings_files, function(file) {
-  df_list_sociability <- read.csv2(file)
+  df_list_sociability <- read.csv2(file, check.names = FALSE)
   df_long <- wide_to_long_sociab(df_list_sociability)
   file_label <- tools::file_path_sans_ext(basename(file))
   df_wide <- reshape_without_source(df_long, paste0("followings_", file_label))
@@ -660,9 +946,60 @@ df_wide_all <- reduce(df_wide_list, function(x, y) full_join(x, y, by = "mouse")
 df_wide <- left_join(df_wide, df_wide_all , by = "mouse") 
 ```
 
-## Automatic graphs
+## Social network
 
 ```{r}
+df_follow_list <- lapply(followings_files, function(file) {
+  df_list_sociability <- read.csv2(file, check.names = FALSE)
+  df_long <- wide_to_long_sociab(df_list_sociability)
+  df_long <- df_long %>% select(-time)
+  
+  value_matrix <- df_long %>%
+    pivot_wider(names_from = zone, values_from = value) %>%
+    column_to_rownames("mouse") %>%
+    as.matrix()
+  
+  file_label <- strsplit(tools::file_path_sans_ext(basename(file)), split = "_")[[1]]
+  avant_dernier <- file_label[length(file_label) - 0]
+  
+  # Gráfico global
+  global_plot <- make_social_network_directed(
+    value_matrix, 
+    title = paste0("Followings Network - ", avant_dernier)
+  )
+  
+  mice <- rownames(value_matrix)
+  
+  # Todos los pares únicos
+  pairs <- combn(mice, 2, simplify = FALSE)
+  
+  # Lista para gráficos por pares
+  pair_plots <- setNames(vector("list", length(pairs)), 
+                      sapply(pairs, function(x) paste(x, collapse = "_")))
+
+  for(i in seq_along(pairs)) {
+    pair <- pairs[[i]]
+    sub_mat <- value_matrix[pair, pair, drop = FALSE]
+    pair_plots[[i]] <- make_social_network_directed_pairs(
+      sub_mat,
+      title = paste0("Social Network ", avant_dernier, ": ", pair[1], " & ", pair[2])
+    )
+  }
+
+  
+  # Devuelve lista con gráfico global y lista de pares
+  list(global_plot = global_plot, pair_plots = pair_plots, df_long = df_long)
+})
+
+print(df_follow_list[[1]]$global_plot)
+print(df_follow_list[[2]]$global_plot)
+
+print(df_follow_list[[2]]$pair_plots[["33F05C1804_57035D1804"]])
+```
+
+## Automatic graphs
+
+```{r, fig.width=12, fig.height=8}
 for(dir in figs_followings_dirs) {
   cat("Type:", dir, "\n")
   mostrar_png_2x2(dir)
@@ -686,9 +1023,62 @@ df_wide_all <- reduce(df_wide_list, function(x, y) full_join(x, y, by = "mouse")
 df_wide <- left_join(df_wide, df_wide_all , by = "mouse") 
 ```
 
-## AutoGraphs
+## Social networks
 
 ```{r}
+
+df_tubeD_list <- lapply(tubeD_files, function(file) {
+  df_list_tubeD <- read.csv2(file, check.names = FALSE)
+  df_long <- wide_to_long_sociab(df_list_tubeD)
+  df_long <- df_long %>% select(-time)
+  
+  value_matrix <- df_long %>%
+    pivot_wider(names_from = zone, values_from = value) %>%
+    column_to_rownames("mouse") %>%
+    as.matrix()
+  
+  file_label <- strsplit(tools::file_path_sans_ext(basename(file)), split = "_")[[1]]
+  avant_dernier <- file_label[length(file_label) - 0]
+  
+  # Gráfico global
+  global_plot <- make_social_network_directed(
+    value_matrix, 
+    title = paste0("Tube dominance Network - ", avant_dernier)
+  )
+  
+  mice <- rownames(value_matrix)
+  
+  # Todos los pares únicos
+  pairs <- combn(mice, 2, simplify = FALSE)
+  
+  # Lista para gráficos por pares
+  pair_plots <- setNames(vector("list", length(pairs)), 
+                      sapply(pairs, function(x) paste(x, collapse = "_")))
+
+  for(i in seq_along(pairs)) {
+    pair <- pairs[[i]]
+    sub_mat <- value_matrix[pair, pair, drop = FALSE]
+    pair_plots[[i]] <- make_social_network_directed_pairs(
+      sub_mat,
+      title = paste0("Tube dominance Network ", avant_dernier, ": ", pair[1], " & ", pair[2])
+    )
+  }
+
+  
+  # Devuelve lista con gráfico global y lista de pares
+  list(global_plot = global_plot, pair_plots = pair_plots, df_long = df_long)
+})
+
+print(df_tubeD_list[[1]]$global_plot)
+print(df_tubeD_list[[2]]$global_plot)
+
+print(df_tubeD_list[[2]]$pair_plots[["33F05C1804_57035D1804"]])
+
+```
+
+## AutoGraphs
+
+```{r, fig.width=12, fig.height=8}
 for(dir in figs_tubeD_dirs) {
   cat("Type:", dir, "\n")
   mostrar_png_2x2(dir)
