@@ -1,0 +1,543 @@
+---
+title: "EcoHab_bi_analysis"
+author: "Santiago Holguin Urbano"
+date: "2025-05-29"
+output: html_document
+---
+
+# Importing
+
+## Library
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(dplyr)
+library(gridExtra)
+library(purrr)
+library(broom)
+library(pheatmap)
+library(scales)
+library(cowplot)
+
+```
+
+## Data
+
+```{r}
+# Lista de rutas
+results_dir <- c(
+  "C:\\Users\\sholguin\\Desktop\\EcoHab-project\\Results_1_Semaine 1 - Habituation - série 1",
+  "C:\\Users\\sholguin\\Desktop\\EcoHab-project\\Results_Semaine 1 - Habituation - série 2",
+  "C:\\Users\\sholguin\\Desktop\\EcoHab-project\\Results_Semaines 4-7 - Pause entre les series de manips"
+)
+
+basenames <- c()
+# Inicializar lista de dataframes
+df_list_all <- list()
+
+for (dir_path in results_dir) {
+  
+  # Definir path a df_cleaned
+  cleaned_dir <- file.path(dir_path, "cleaned_df")
+  
+  # Verificar si existe
+  if (dir.exists(cleaned_dir)) {
+    
+    # Listar archivos csv
+    csv_files <- list.files(cleaned_dir, pattern = "\\.csv$", full.names = TRUE)
+    
+    # Leer cada csv y añadirlo a la lista
+    for (csv_file in csv_files) {
+      df_name <- paste0(basename(dir_path), "_", tools::file_path_sans_ext(basename(csv_file)))
+      
+      basenames <- append(basenames, basename(dir_path))
+      
+      # Limpiar el nombre para eliminar espacios problemáticos
+      df_name <- str_replace_all(df_name, "\\s+", "_")
+      
+      # Leer CSV
+      df <- read_csv(csv_file, show_col_types = FALSE)
+      
+      # Guardar en la lista
+      df_list_all[[df_name]] <- df
+    }
+    
+  } else {
+    warning(paste("No existe:", cleaned_dir))
+  }
+}
+
+# Visualizar nombres cargados
+print(names(df_list_all))
+
+```
+
+# Activity
+
+## Total time on each cage
+
+```{r}
+df_list <- df_list_all[grepl("1h", names(df_list_all))]
+
+# Combinar en un largo
+df_long_combined <- imap_dfr(df_list, ~ mutate(.x, source_df = .y))
+
+df_long_combined <- df_long_combined %>%
+  rename(time = `time [h]`) %>%
+  mutate(
+    cage = str_match(source, "cage\\s+(\\S+)")[,2],
+    cage = str_remove(cage, "cage "),
+  ) %>%
+  filter(!is.na(cage))
+
+df_filtered <- df_long_combined %>%
+  mutate(metric = case_when(
+    str_detect(source, "Number of visits") ~ "Visits",
+    str_detect(source, "Total time") ~ "Time",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(metric))
+
+df_visits <- df_filtered %>% filter(metric == "Visits")
+df_time <- df_filtered %>% filter(metric == "Time")
+
+df_visits_summary <- df_visits %>%
+  group_by(source_df, mouse, zone, cage) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+
+df_time_summary <- df_time %>%
+  group_by(source_df, mouse, zone, cage) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+
+clean_source <- function(x) {
+  parts <- str_split(x, "_", simplify = TRUE) %>% as.character()
+  len <- length(parts)
+  
+  # Quitar las últimas 2
+  if (len > 2) {
+    parts <- parts[1:(len - 2)]
+  }
+  # Quitar las primeras 4
+  if (length(parts) > 4) {
+    parts <- parts[-(1:4)]
+  } else {
+    parts <- character(0)
+  }
+  if (length(parts) == 0) {
+    return("short")
+  } else {
+    return(paste(parts, collapse = "_"))
+  }
+}
+
+# Aplicar limpieza y crear cage_source
+df_visits_summary <- df_visits_summary %>%
+  mutate(source_clean = sapply(source_df, clean_source),
+         cage_source = paste(cage, source_clean, sep = "_"))
+
+df_time_summary <- df_time_summary %>%
+  mutate(source_clean = sapply(source_df, clean_source),
+         cage_source = paste(cage, source_clean, sep = "_"))
+
+
+cage_source_levels <- df_visits_summary %>%
+  distinct(cage, cage_source) %>%
+  arrange(cage, cage_source) %>%
+  pull(cage_source)
+
+# Crear un factor ordenado para mantener el orden de los ejes
+df_visits_summary <- df_visits_summary %>%
+  mutate(cage_source = factor(cage_source, levels = cage_source_levels))
+
+df_time_summary <- df_time_summary %>%
+  mutate(cage_source = factor(cage_source, levels = cage_source_levels))
+
+# Calcular posiciones de separación
+cage_change_positions <- df_visits_summary %>%
+  distinct(cage, cage_source) %>%
+  group_by(cage) %>%
+  summarise(last_pos = last(cage_source), .groups = "drop") %>%
+  mutate(pos = match(last_pos, cage_source_levels) + 0.5) %>%
+  filter(row_number() != n()) # quitar última línea innecesaria
+
+zones <- unique(df_visits_summary$zone)
+
+values_visits <- df_visits_summary$value
+y_min_visits <- min(values_visits, na.rm = TRUE) * 0.9
+y_max_visits <- max(values_visits, na.rm = TRUE) * 1.1
+
+time_values_hours <- df_time_summary$value / 60
+y_min_time <- min(time_values_hours, na.rm = TRUE) * 0.9
+y_max_time <- max(time_values_hours, na.rm = TRUE) * 1.1
+
+plots_visits <- list()
+plots_time <- list()
+
+max_shapes <- 26
+shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mouse)))
+mouse_levels <- unique(df_time_summary$mouse)
+shape_values <- setNames(shapes, mouse_levels)
+
+for (z in zones) {
+  # Visits
+  p_visits <- df_visits_summary %>%
+    filter(zone == z) %>%
+    ggplot(aes(x = cage_source, y = value, color = mouse, shape = mouse)) +
+    geom_point(size = 3, position = position_jitter(width = 0.2)) +
+    scale_shape_manual(values = shape_values) +
+    scale_color_manual(values = scales::hue_pal()(length(unique(df_visits_summary$mouse)))) +
+    labs(title = paste("Number of visits per hour |", z),
+         x = "Cage_Source", y = "Mean visits",
+         shape = "Mouse",
+         color = "Mouse") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    coord_cartesian(ylim = c(y_min_visits, y_max_visits))
+
+  # Añadir separadores verticales
+  for (pos in cage_change_positions$pos) {
+    p_visits <- p_visits + geom_vline(xintercept = pos, linetype = "dashed", color = "grey50")
+  }
+
+  # Time
+  p_time <- df_time_summary %>%
+    filter(zone == z) %>%
+    ggplot(aes(x = cage_source, y = value / 60, color = mouse, shape = mouse)) +
+    geom_point(size = 3, position = position_jitter(width = 0.2)) +
+    scale_shape_manual(values = shape_values) +
+    scale_color_manual(values = scales::hue_pal()(length(unique(df_time_summary$mouse)))) +
+    labs(title = paste("Time spent (min) per hour |", z),
+         x = "Cage_Source", y = "Mean time (min)",
+         shape = "Mouse",
+         color = "Mouse") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    coord_cartesian(ylim = c(y_min_time, y_max_time))
+
+  for (pos in cage_change_positions$pos) {
+    p_time <- p_time + geom_vline(xintercept = pos, linetype = "dashed", color = "grey50")
+  }
+
+  plots_visits[[z]] <- p_visits
+  plots_time[[z]] <- p_time
+}
+
+grid.arrange(grobs = c(plots_visits, plots_time), ncol = 2)
+```
+
+## Patrolling style
+
+```{r}
+patrolling_list <- df_list <- df_list_all[grepl("patrolling", names(df_list_all))]
+
+for (cond in names(patrolling_list)) {
+  
+  df <- patrolling_list[[cond]]
+  
+  # Si está en ancho, pivotar a largo
+  if (!"transition" %in% names(df)) {
+    df_long <- df %>%
+      pivot_longer(cols = -mouse, names_to = "transition", values_to = "value")
+  } else {
+    df_long <- df
+  }
+  
+  # Filtrar transiciones que no sean auto-transiciones
+  df_long <- df_long %>%
+    filter(substr(transition, 1, 1) != substr(transition, 3, 3))
+  
+  # Promedio por ratón y transición
+  df_mean <- df_long %>%
+    group_by(mouse, transition) %>%
+    summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+  
+  # Pivotar ancho
+  df_wide <- df_mean %>%
+    pivot_wider(names_from = transition, values_from = value)
+  
+  # Ordenar columnas alfabéticamente (excluyendo 'mouse')
+  cols_order <- c("mouse", sort(setdiff(names(df_wide), "mouse")))
+  df_wide <- df_wide[, cols_order]
+  
+  # Ordenar filas (ratones) alfabéticamente
+  df_wide <- df_wide %>%
+    arrange(mouse)
+  
+  # Verificar
+  print(paste("Condition:", cond))
+  print(df_wide)
+  
+  # Heatmap
+  mat <- df_wide %>%
+    column_to_rownames("mouse") %>%
+    as.matrix()
+  
+  pheatmap(mat,
+           cluster_rows = FALSE,   # ❌ sin clustering filas
+           cluster_cols = FALSE,   # ❌ sin clustering columnas
+           main = paste("Transitions (no auto) -", cond),
+           color = colorRampPalette(c("white", "blue"))(100),
+           fontsize_row = 8,
+           fontsize_col = 8,
+           border_color = NA,
+           display_numbers = FALSE)
+}
+df_all <- imap_dfr(df_list, ~ {
+  df <- .x
+  df$time <- .y   # nombre (A,B,C,D)
+  df
+})
+
+df_all$time <- factor(df_all$time, levels = names(df_list), ordered = TRUE)
+
+# 3. Pivotamos largo para tener 1 fila por mouse, time, transition y value
+df_long <- df_all %>%
+  pivot_longer(cols = -c(mouse, time), names_to = "transition", values_to = "value")
+
+slopes_df <- df_long %>%
+  group_by(mouse, transition) %>%
+  summarise(
+    slope = coef(lm(value ~ as.numeric(time)))[2],
+    .groups = "drop"
+  )
+
+# Ahora tienes un df con la pendiente de cada transición para cada ratón.
+
+# 5. Puedes pivotar ancho si quieres tener un dataframe con columnas por transition y filas por mouse:
+slopes_wide <- slopes_df %>%
+  pivot_wider(names_from = transition, values_from = slope)
+
+mat_slopes <- slopes_wide %>%
+  column_to_rownames("mouse") %>%
+  as.matrix()
+
+
+pheatmap(mat_slopes,
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,
+         display_numbers = FALSE,      # muestra valores
+         main = "Slope of patrolling transitions per mouse",
+         fontsize_row = 10,
+         fontsize_col = 10,
+         color = colorRampPalette(c("blue", "white", "red"))(100))
+
+```
+
+# Solitude
+
+```{r}
+
+df_list_solitude <- df_list_all[grepl("sollitude", names(df_list_all))]
+
+df_long_combined <- imap_dfr(df_list_solitude, ~ mutate(.x, source_df = .y))
+
+df_time_summary <- df_long_combined %>%
+  group_by(source_df, mouse, zone, cage) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+
+clean_source <- function(x) {
+  parts <- str_split(x, "_", simplify = TRUE) %>% as.character()
+  len <- length(parts)
+
+  if (len > 2) {
+    parts <- parts[1:(len - 2)]
+  }
+  if (length(parts) > 4) {
+    parts <- parts[-(1:4)]
+  } else {
+    parts <- character(0)
+  }
+  if (length(parts) == 0) {
+    return("short")
+  } else {
+    return(paste(parts, collapse = "_"))
+  }
+}
+
+df_time_summary <- df_time_summary %>%
+  mutate(source_clean = sapply(source_df, clean_source),
+         cage_source = paste(cage, source_clean, sep = "_"))
+
+cage_source_levels <- df_time_summary %>%
+  distinct(cage_source, cage, source_clean) %>%
+  arrange(cage, source_clean) %>%
+  pull(cage_source)
+
+df_time_summary <- df_time_summary %>%
+  mutate(cage_source = factor(cage_source, levels = cage_source_levels))
+
+cage_change_positions <- df_time_summary %>%
+  distinct(cage, cage_source) %>%
+  group_by(cage) %>%
+  summarise(last_pos = last(cage_source), .groups = "drop") %>%
+  mutate(pos = match(last_pos, cage_source_levels) + 0.5) %>%
+  filter(row_number() != n()) # quitar última línea
+
+# 8. Shapes para los ratones
+max_shapes <- 26
+mouse_levels <- unique(df_time_summary$mouse)
+shapes <- rep(0:(max_shapes - 1), length.out = length(mouse_levels))
+shape_values <- setNames(shapes, mouse_levels)
+
+# 9. Escala Y unificada (horas)
+time_values_hours <- df_time_summary$value / 3600
+y_min <- min(time_values_hours, na.rm = TRUE) * 0.9
+y_max <- max(time_values_hours, na.rm = TRUE) * 1.1
+
+# 10. Crear plots para cada zona con líneas verticales para separar jaulas/condiciones
+zones <- unique(df_time_summary$zone)
+plots_time <- list()
+
+for (z in zones) {
+  p <- df_time_summary %>%
+    filter(zone == z) %>%
+    ggplot(aes(x = cage_source, y = value / 3600, color = mouse, shape = mouse)) +
+    geom_point(size = 3, position = position_jitter(width = 0.2)) +
+    scale_shape_manual(values = shape_values) +
+    scale_color_manual(values = scales::hue_pal()(length(mouse_levels))) +
+    labs(title = paste("Time spent alone (h) |", z),
+         x = "Cage_Condition", y = "Total time (h)",
+         color = "Mouse", shape = "Mouse") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    coord_cartesian(ylim = c(y_min, y_max))
+
+  for (pos in cage_change_positions$pos) {
+    p <- p + geom_vline(xintercept = pos, linetype = "dashed", color = "grey50")
+  }
+
+  plots_time[[z]] <- p
+}
+
+# 11. Mostrar todos juntos
+grid.arrange(grobs = plots_time, ncol = 1)
+```
+
+# Sociability
+
+```{r, fig.width=20, fig.height=10}
+df_list_solitude <- df_list_all[grepl("sociability", names(df_list_all))]
+
+df_long_combined <- imap_dfr(df_list_solitude, ~ mutate(.x, source_df = .y))
+
+clean_source <- function(x) {
+  parts <- str_split(x, "_", simplify = TRUE) %>% as.character()
+  len <- length(parts)
+  if (len > 2) parts <- parts[1:(len - 2)]
+  if (length(parts) > 4) parts <- parts[-(1:4)] else parts <- character(0)
+  if (length(parts) == 0) return("short")
+  paste(parts, collapse = "_")
+}
+
+df_long_combined <- df_long_combined %>%
+  mutate(source_clean = sapply(source_df, clean_source),
+         time_days = time) %>%
+  filter(!is.na(time_days))
+
+# Normalizar todos los grupos a 10 bins
+reduce_to_10_bins <- function(df_group) {
+  bins <- 10
+  df_group %>%
+    mutate(bin = ntile(time_days, bins)) %>%
+    group_by(mouse, source_clean, zone, bin) %>%
+    summarize(
+      time_days = mean(time_days),
+      value = mean(value),
+      source_df = first(source_df),
+      .groups = "drop"
+    )
+}
+library(purrr)
+
+df_groups <- df_long_combined %>%
+  group_by(mouse, source_df, zone) %>%
+  group_split()
+
+df_reduced_list <- map(df_groups, ~ reduce_to_10_bins(.x))
+
+df_long_reduced <- bind_rows(df_reduced_list)
+
+
+# Graficar igual que antes
+mice <- unique(df_long_reduced$mouse)
+zone_palette <- hue_pal()(length(unique(df_long_reduced$zone)))
+names(zone_palette) <- unique(df_long_reduced$zone)
+
+library(cowplot)
+
+plots <- list()
+for (m in mice) {
+  df_mouse <- df_long_reduced %>% filter(mouse == m)
+
+  # Niveles únicos y bloques
+  source_df_levels <- unique(df_mouse$source_df)
+  n_blocks <- length(source_df_levels)
+
+  # Mapear formas únicas por zona (máx 10 formas)
+  zone_levels <- unique(df_mouse$zone)
+  shape_vals <- seq_along(zone_levels) %% 25  # 0:24 shapes disponibles en ggplot
+
+  df_mouse <- df_mouse %>%
+    mutate(
+      source_df = factor(source_df, levels = source_df_levels),
+      block = as.numeric(source_df),
+      bin_offset = bin + (block - 1) * 10,
+      zone = factor(zone, levels = zone_levels)
+    )
+
+  p <- ggplot(df_mouse, aes(x = bin_offset, y = value, color = zone, shape = zone)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(values = zone_palette) +
+    scale_shape_manual(values = shape_vals) +
+    labs(
+      title = paste("Mouse:", m),
+      x = "Bin (offset by condition)",
+      y = "Value",
+      color = "Zone",
+      shape = "Zone"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  # ➤ Líneas de tendencia separadas por bloque
+  for (b in seq_len(n_blocks)) {
+    df_block <- df_mouse %>% filter(block == b)
+    p <- p +
+      geom_smooth(
+        data = df_block,
+        aes(x = bin_offset, y = value, color = zone),
+        method = "lm",
+        se = FALSE,
+        linewidth = 0.8
+      )
+  }
+
+  # ➤ Líneas verticales de separación entre bloques
+  offset_map <- seq(0, by = 10, length.out = n_blocks + 1)
+  vlines <- offset_map[-c(1, length(offset_map))]
+  for (v in vlines) {
+    p <- p + geom_vline(xintercept = v, linetype = "dashed", color = "grey50")
+  }
+
+  # ➤ Etiquetas debajo del eje x con ggdraw
+  label_names <- as.character(source_df_levels)
+  x_rel <- (seq_len(n_blocks) - 0.5) / n_blocks
+
+  p_clean <- p + theme(plot.margin = margin(10, 10, 30, 10))
+
+  final_plot <- ggdraw(p_clean) +
+    draw_text(
+      text = label_names,
+      x = x_rel,
+      y = 0,
+      angle = 0,         # horizontal
+      vjust = 1,         # alineado en la base
+      size = 4
+    )
+
+  print(final_plot)
+  plots[[m]] <- final_plot
+}
+
+```

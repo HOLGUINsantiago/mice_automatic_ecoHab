@@ -24,7 +24,14 @@ library(igraph)
 library(ggraph)
 library(tidygraph)
 
-results_dir <- "D:\\Bureau avant\\EcoHab-project\\Results"
+results_dir_vect <- c(
+  "D:\\EcoHab-project\\Results_1_Semaine 1 - Habituation - série 1",
+  "D:\\EcoHab-project\\Results_Semaine 1 - Habituation - série 2",
+  "D:\\EcoHab-project\\Results_Semaines 4-7 - Pause entre les series de manips"
+)
+
+
+results_dir <- results_dir_vect[2]
 
 activity_file_1h <- file.path(results_dir, "activity", "activity_bin_1.00_h.csv")
 activity_file_1d <- file.path(results_dir, "activity", "activity_bin_24.00_h.csv")
@@ -611,13 +618,22 @@ df_list <- split_activity_file(activity_file_1h)
 df_long <- list_to_df_long(df_list)
 df_wide <- reshape_with_time(df_long, "activity_1h")
 
+dir.create(file.path(results_dir, "cleaned_df"), showWarnings = FALSE, recursive = TRUE)
+write.csv(df_long, paste0(results_dir, "\\cleaned_df\\" ,"activity_1h.csv"), row.names = FALSE)
+
 df_list <- split_activity_file(activity_file_1d)
 df_long <- list_to_df_long(df_list)
 df_wide <- left_join(df_wide, reshape_with_time(df_long, "activity_24h"), by = "mouse")  
 
+dir.create(file.path(results_dir, "cleaned_df"), showWarnings = FALSE, recursive = TRUE)
+write.csv(df_long, paste0(results_dir, "\\cleaned_df\\" ,"activity_24h.csv"), row.names = FALSE)
+
 df_list <- split_activity_file(activity_file_1w)
 df_long <- list_to_df_long(df_list)
 df_wide <- left_join(df_wide, reshape_with_time(df_long, "activity_168h"), by = "mouse") 
+
+dir.create(file.path(results_dir, "cleaned_df"), showWarnings = FALSE, recursive = TRUE)
+write.csv(df_long, paste0(results_dir, "\\cleaned_df\\" ,"activity_168h.csv"), row.names = FALSE)
 ```
 
 ## General plotting
@@ -770,10 +786,8 @@ grid.arrange(grobs = c(plots_visits, plots_time), ncol = 2)
 df_list <- split_activity_file(activity_file_10s)
 df_long <- list_to_df_long(df_list)
 
-filter(value > 0)
-
 # Extraer letra de la jaula desde la columna 'source'
-df <- df %>%
+df <- df_long %>%
   mutate(cage = str_sub(str_match(source, "cage\\s+(\\S+)")[,2], 1, 1))
 
 # Eliminar cualquier fila donde no se haya extraído la letra correctamente
@@ -784,22 +798,44 @@ df <- df %>% arrange(mouse, `time [h]`)
 
 # Expandir según número de visitas (para secuencia real de transiciones)
 df_seq <- df %>%
-  mutate(value = as.integer(round(value))) %>%  # redondea y convierte
-  uncount(weights = value)  # repite filas 'value' veces
+  mutate(value = as.integer(round(value))) %>%
+  filter(!is.na(value)) %>%
+  uncount(weights = value) 
 
 # Agrupar por ratón y crear lista de secuencias de visitas
 secuencias <- df_seq %>%
   group_by(mouse) %>%
   summarise(cages = list(cage), .groups = "drop")
 
+results_df <- data.frame()
+
 for (i in seq_len(nrow(secuencias))) {
-  seq_i <- secuencias$cages[[i]]  # secuencia del ratón i
-  res <- fit_markov_qgraph(seq_i,secuencias$mouse[i])
+  seq_i <- secuencias$cages[[i]]
+  res <- fit_markov_qgraph(seq_i, secuencias$mouse[i])
   
-  print(secuencias$mouse[i])
-  print(res$transition_matrix)
+  mat <- res$transition_matrix
+  states <- rownames(mat)
+  if (is.null(states)) states <- colnames(mat)
+  
+  trans_vec <- as.vector(t(mat))
+  names(trans_vec) <- paste0(
+    rep(states, each = length(states)),
+    "_",
+    rep(states, times = length(states))
+  )
+  
+  df_row <- data.frame(mouse = secuencias$mouse[i], t(trans_vec), check.names = FALSE)
+  
+  results_df <- bind_rows(results_df, df_row)
   print(res$graph_object)
+  
 }
+
+write.csv(results_df, paste0(results_dir, "\\cleaned_df\\" ,"patrolling_style.csv"), row.names = FALSE)
+
+# Supón que tu dataframe wide se llama df_wide
+df_wide <- df_wide %>%
+  left_join(results_df, by = "mouse")
 ```
 
 # Solitude
@@ -867,7 +903,9 @@ for (z in zones) {
   plots_time[[z]] <- p_time
 }
 
-grid.arrange(grobs = c(plots_visits, plots_time), ncol = 2)
+grid.arrange(grobs = c(plots_time), ncol = 1)
+
+write.csv(df_time_summary, paste0(results_dir, "\\cleaned_df\\" ,"sollitude.csv"), row.names = FALSE)
 
 ```
 
@@ -882,6 +920,20 @@ df_wide_list <- lapply(sociability_files, function(file) {
   df_long <- wide_to_long_sociab(df_list_sociability)
   file_label <- tools::file_path_sans_ext(basename(file))
   df_wide <- reshape_without_source(df_long, paste0("sociability_", file_label))
+  if (grepl("24.00_h", file)) {
+    if (grepl("dark", file)) {
+      write.csv(df_long, 
+                file = paste0(results_dir, "\\cleaned_df\\", "sociability_dark.csv"), 
+                row.names = FALSE)
+      cat("Archivo guardado para:", file, "\n")
+    } else{
+      write.csv(df_long, 
+                file = paste0(results_dir, "\\cleaned_df\\", "sociability_light.csv"), 
+                row.names = FALSE)
+      cat("Archivo guardado para:", file, "\n")
+    }
+  }
+  
   return(df_wide)
 })
 df_wide_all <- reduce(df_wide_list, function(x, y) full_join(x, y, by = "mouse"))
@@ -892,6 +944,7 @@ df_wide <- left_join(df_wide, df_wide_all , by = "mouse")
 ## Own graphs
 
 ```{r, fig.width=12, fig.height=8}
+
 df_list_sociability <- lapply(sociability_files, read.csv2,check.names = FALSE)
 df_long <- lapply(df_list_sociability, wide_to_long_sociab)
 
@@ -1211,9 +1264,8 @@ df_final_activity <- df_final %>%
 ## Exporting data
 
 ```{r}
-write.csv(df_wide_cleaned, "full_ecoHab_Data_cleaned.csv", row.names = FALSE)
-message("[INFO] Cleaned version saved to 'full_ecoHab_Data_cleaned.csv'")
 
-write.csv(df_final_activity, "full_ecoHab_Data_filled.csv", row.names = FALSE)
-message("[INFO] Filled version saved to 'full_ecoHab_Data_filled.csv'")
+write.csv(df_wide_cleaned, paste0(results_dir, "\\cleaned_df\\" ,"full_ecoHab_Data_cleaned.csv"), row.names = FALSE)
+
+write.csv(df_final_activity, paste0(results_dir, "\\cleaned_df\\" ,"full_ecoHab_Data_filled.csv"), row.names = FALSE)
 ```
