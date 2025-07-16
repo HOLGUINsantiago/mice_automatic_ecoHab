@@ -25,7 +25,7 @@ library(ggraph)
 library(tidygraph)
 
 results_dir_vect <- c(
-  "D:\\EcoHab-project\\Results_1_Semaine 1 - Habituation - série 1",
+  "D:\\EcoHab-project\\Results_Semaine 1 - Habituation - série 1",
   "D:\\EcoHab-project\\Results_Semaine 1 - Habituation - série 2",
   "D:\\EcoHab-project\\Results_Semaines 4-7 - Pause entre les series de manips"
 )
@@ -64,6 +64,8 @@ figs_followings_dirs <- all_dirs_recursive[grepl("_followings", basename(all_dir
 # Important functions
 
 ## df list creation
+
+Creation of a list of df using csv output of mouse activity
 
 ```{r}
 
@@ -123,12 +125,15 @@ split_activity_file <- function(path) {
 
 ## df_long creation
 
+Transformation of list of df, on single df by adding explicit column of source
+
 ```{r}
 list_to_df_long <- function(df_list) {
   df_long <- map2_dfr(
     .x = df_list,
     .y = names(df_list),
     .f = ~ .x %>%
+      mutate(across(-c(mouse, `time [h]`), as.character)) %>%  # <- Añadido aquí
       pivot_longer(
         cols = -c(mouse, `time [h]`),
         names_to = "zone",
@@ -136,17 +141,20 @@ list_to_df_long <- function(df_list) {
       ) %>%
       mutate(
         source = .y,
-        value = suppressWarnings(as.numeric(value)),         # Forzamos a numérico
-        `time [h]` = suppressWarnings(as.numeric(`time [h]`)) # También opcionalmente
+        value = suppressWarnings(as.numeric(value)),
+        `time [h]` = suppressWarnings(as.numeric(`time [h]`))
       )
   )
   return(df_long)
 }
+
 ```
 
 ## Social networks
 
 ### Undirected
+
+Create undirected social network from an input matrix
 
 ```{r}
 make_social_network <- function(mat, title = "Social Network", threshold = 0) {
@@ -182,6 +190,8 @@ make_social_network <- function(mat, title = "Social Network", threshold = 0) {
 
 ### Directed
 
+Create directed social network from an input matrix
+
 ```{r}
 make_social_network_directed <- function(mat, title = "Directed Social Network", threshold = 0) {
   
@@ -216,6 +226,8 @@ make_social_network_directed <- function(mat, title = "Directed Social Network",
 
 ### Pairs
 
+Create ddirected social network from an input matrix (of two animals - nodes)
+
 ```{r}
 make_social_network_directed_pairs <- function(mat, title = "Social Network Directed", threshold = 0) {
   mat[is.na(mat)] <- 0
@@ -243,6 +255,8 @@ make_social_network_directed_pairs <- function(mat, title = "Social Network Dire
 ```
 
 ## Graphic creation
+
+Big function for creating 3 different types of graph (Barplot, scatter, or heatmap)
 
 ```{r}
 analyze_df_long <- function(df_long, type = c("total", "matrix", "general"),
@@ -402,6 +416,8 @@ else if(type == "matrix") {
 
 ## df long solitude
 
+Transformation sollitude file on list containing multiple df
+
 ```{r}
 list_to_df_long_matrix <- function(df_list) {
   df_long <- purrr::map2_dfr(
@@ -439,6 +455,8 @@ list_to_df_long_matrix <- function(df_list) {
 ```
 
 ## df long sociability
+
+Transform df list on long df
 
 ```{r}
 wide_to_long_sociab <- function(df_wide) {
@@ -561,6 +579,8 @@ reshape_without_source <- function(df, name) {
 ```
 
 ## Patrolling style
+
+It visualizes how mice transition into different cages each other as a network graph to quickly understand movement patterns
 
 ```{r}
 
@@ -705,7 +725,6 @@ df_long <- df_long %>%
   ) %>%
   filter(!is.na(cage))
 
-# 2. Filtrar solo las variables de interés y crear columna métrica
 df_filtered <- df_long %>%
   mutate(metric = case_when(
     str_detect(source, "Number of visits") ~ "Visits",
@@ -715,18 +734,30 @@ df_filtered <- df_long %>%
   filter(!is.na(metric))%>%
   select(-source)  
 
+# 2. Filtrar solo las variables de interés y crear columna métrica
+df_filtered <- df_filtered %>%
+  mutate(
+    light_dark = case_when(
+      str_detect(zone, "dark") ~ "dark",
+      str_detect(zone, "ligh") ~ "light",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(light_dark))
+
+
 # 3. Separar en dos dataframes según métrica
 df_visits <- df_filtered %>% filter(metric == "Visits")
 df_time <- df_filtered %>% filter(metric == "Time")
 
 # 4. Resumir promedios para visitas (group_by sin tiempo)
 df_visits_summary <- df_visits %>%
-  group_by(mouse, zone, cage) %>%
+  group_by(mouse, light_dark, cage) %>%
   summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
 
 # 5. Resumir promedios para tiempo
 df_time_summary <- df_time %>%
-  group_by(mouse, zone, cage) %>%
+  group_by(mouse, light_dark, cage) %>%
   summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
 
 max_shapes <- 26
@@ -738,9 +769,8 @@ shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mou
 mouse_levels <- df_time_summary %>% pull(mouse) %>% unique()
 shape_values <- setNames(shapes, mouse_levels)
 
-zones <- unique(df_filtered$zone)
+light_dark_levels <- unique(df_filtered$light_dark)
 
-# Crear listas para guardar plots
 plots_visits <- list()
 values_visits <- df_visits_summary$value
 y_min_visits <- min(values_visits, na.rm = TRUE) * 0.9
@@ -751,31 +781,35 @@ time_values_hours <- df_time_summary$value / 60
 y_min_time <- min(time_values_hours, na.rm = TRUE) * 0.9
 y_max_time <- max(time_values_hours, na.rm = TRUE) * 1.1
 
-for (z in zones) {
-  # Visits
+for (ld in light_dark_levels) {
+  
   p_visits <- df_visits_summary %>%
-    filter(zone == z) %>%
+    filter(light_dark == ld) %>%
     ggplot(aes(x = cage, y = value, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
-    labs(title = paste("Number of visits per hour |", z), x = "Cage", y = "Mean visits") +
+    labs(title = paste("Number of visits per hour |", ld),
+         x = "Cage", y = "Mean visits") +
     theme_minimal() +
     coord_cartesian(ylim = c(y_min_visits, y_max_visits))
   
-
-  # Time
   p_time <- df_time_summary %>%
-    filter(zone == z) %>%
+    filter(light_dark == ld) %>%
     ggplot(aes(x = cage, y = value / 60, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
-    labs(title = paste("Time spent (min) per hour |", z), x = "Cage", y = "Mean time (min)") +
-    theme_minimal()+
+    labs(title = paste("Time spent (min) per hour |", ld),
+         x = "Cage", y = "Mean time (min)") +
+    theme_minimal() +
     coord_cartesian(ylim = c(y_min_time, y_max_time))
   
-  plots_visits[[z]] <- p_visits
-  plots_time[[z]] <- p_time
+  plots_visits[[ld]] <- p_visits
+  plots_time[[ld]] <- p_time
+  
+  #print(p_visits)
+  #print(p_time)
 }
+
 grid.arrange(grobs = c(plots_visits, plots_time), ncol = 2)
 
 ```
@@ -862,50 +896,55 @@ df_long <- df_long %>%
   ) %>%
   filter(!is.na(cage))
 
-# 2. Filtrar solo las variables de interés y crear columna métrica
+# Eliminar source
 df_filtered <- df_long %>%
-  select(-source)  
-
-df_time <- df_filtered 
+  select(-source) %>%
+  mutate(
+    light_dark = case_when(
+      str_detect(zone, "dark") ~ "dark",
+      str_detect(zone, "ligh") ~ "light",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(light_dark))
 
 # 5. Resumir promedios para tiempo
-df_time_summary <- df_time %>%
-  group_by(mouse, zone, cage) %>%
+df_time_summary <- df_filtered %>%
+  group_by(mouse, light_dark, cage) %>%
   summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
 
-  max_shapes <- 26
+# Shapes
+max_shapes <- 26
+shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mouse)))
+mouse_levels <- df_time_summary %>% pull(mouse) %>% unique()
+shape_values <- setNames(shapes, mouse_levels)
 
-  # Crear vector dinámico de shapes, reciclando si hay más mouse que shapes
-  shapes <- rep(0:(max_shapes - 1), length.out = length(unique(df_time_summary$mouse)))
-  
-  # Crear named vector para que ggplot reconozca cada mouse con un shape específico
-  mouse_levels <- df_time_summary %>% pull(mouse) %>% unique()
-  shape_values <- setNames(shapes, mouse_levels)
-
-zones <- unique(df_filtered$zone)
-
+# Escala unificada
 time_values_hours <- df_time_summary$value / 3600
 y_min <- min(time_values_hours, na.rm = TRUE) * 0.9
 y_max <- max(time_values_hours, na.rm = TRUE) * 1.1
 
-# Lista para los plots
+# Lista de plots
 plots_time <- list()
+light_dark_levels <- unique(df_time_summary$light_dark)
 
-for (z in zones) {
+for (ld in light_dark_levels) {
   p_time <- df_time_summary %>%
-    filter(zone == z) %>%
+    filter(light_dark == ld) %>%
     ggplot(aes(x = cage, y = value / 3600, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
-    labs(title = paste("Time spent alone (h) |", z), x = "Cage", y = "Total time (h)") +
+    labs(title = paste("Time spent alone (h) |", ld),
+         x = "Cage", y = "Total time (h)") +
     theme_minimal() +
-    coord_cartesian(ylim = c(y_min, y_max))  # <--- ESCALA UNIFICADA
-  plots_time[[z]] <- p_time
+    coord_cartesian(ylim = c(y_min, y_max))
+  
+  plots_time[[ld]] <- p_time
+  print(p_time)
 }
 
-grid.arrange(grobs = c(plots_time), ncol = 1)
-
-write.csv(df_time_summary, paste0(results_dir, "\\cleaned_df\\" ,"sollitude.csv"), row.names = FALSE)
+# Guardar CSV limpio
+write.csv(df_time_summary, paste0(results_dir, "\\cleaned_df\\", "solitude.csv"), row.names = FALSE)
 
 ```
 
@@ -920,28 +959,50 @@ df_wide_list <- lapply(sociability_files, function(file) {
   df_long <- wide_to_long_sociab(df_list_sociability)
   file_label <- tools::file_path_sans_ext(basename(file))
   df_wide <- reshape_without_source(df_long, paste0("sociability_", file_label))
-  if (grepl("24.00_h", file)) {
-    if (grepl("dark", file)) {
-      write.csv(df_long, 
-                file = paste0(results_dir, "\\cleaned_df\\", "sociability_dark.csv"), 
-                row.names = FALSE)
-      cat("Archivo guardado para:", file, "\n")
-    } else{
-      write.csv(df_long, 
-                file = paste0(results_dir, "\\cleaned_df\\", "sociability_light.csv"), 
-                row.names = FALSE)
-      cat("Archivo guardado para:", file, "\n")
-    }
-  }
-  
-  return(df_wide)
 })
 df_wide_all <- reduce(df_wide_list, function(x, y) full_join(x, y, by = "mouse"))
 
 df_wide <- left_join(df_wide, df_wide_all , by = "mouse") 
+
+# Preparar lista de dfs largos con columna time_group extraída del nombre
+df_long_list <- lapply(sociability_files, function(file) {
+  # Leer CSV y convertir a long
+  df_list_sociability <- read.csv2(file, check.names = FALSE)
+  df_long <- wide_to_long_sociab(df_list_sociability)
+  
+  if (!grepl("24.00_h", file)) {
+    return()
+  }
+
+  # Extraer n de __n_x_24.00
+  file_label <- tools::file_path_sans_ext(basename(file))
+  print(file_label)
+  n_match <- str_match(file_label, "_(\\d+)_x_24\\.00")[,2]
+  n_val <- if (!is.na(n_match)) as.integer(n_match) else NA_integer_
+
+  # Añadir columna identificadora
+  df_long$time <- n_val
+
+  return(df_long)
+})
+
+# Unir todos en un único df_long combinado
+df_long_combined <- bind_rows(df_long_list)
+
+# Guardar en carpeta cleaned_df
+write.csv(
+  df_long_combined,
+  file = file.path(results_dir, "cleaned_df", "sociability_combined.csv"),
+  row.names = FALSE
+)
+
+cat("Archivo consolidado guardado en:", file.path(results_dir, "cleaned_df", "sociability_combined.csv"), "\n")
+
 ```
 
 ## Own graphs
+
+Heat maps of sociability : force of the sociability for each different day, and also evolution of this socibiaility on a single day
 
 ```{r, fig.width=12, fig.height=8}
 

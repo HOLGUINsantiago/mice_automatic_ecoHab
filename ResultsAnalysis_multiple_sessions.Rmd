@@ -27,9 +27,9 @@ library(cowplot)
 ```{r}
 # Lista de rutas
 results_dir <- c(
-  "C:\\Users\\sholguin\\Desktop\\EcoHab-project\\Results_1_Semaine 1 - Habituation - série 1",
-  "C:\\Users\\sholguin\\Desktop\\EcoHab-project\\Results_Semaine 1 - Habituation - série 2",
-  "C:\\Users\\sholguin\\Desktop\\EcoHab-project\\Results_Semaines 4-7 - Pause entre les series de manips"
+  "D:\\EcoHab-project\\Results_Semaine 1 - Habituation - série 1",
+  "D:\\EcoHab-project\\Results_Semaine 1 - Habituation - série 2",
+  "D:\\EcoHab-project\\Results_Semaines 4-7 - Pause entre les series de manips"
 )
 
 basenames <- c()
@@ -153,6 +153,31 @@ df_visits_summary <- df_visits_summary %>%
 df_time_summary <- df_time_summary %>%
   mutate(cage_source = factor(cage_source, levels = cage_source_levels))
 
+df_time_summary <- df_time_summary %>%
+  mutate(condition = if_else(str_detect(zone, "light"), "light", "dark"))
+
+# Suponiendo que tienes una columna 'condition' con "light" o "dark" y una columna 'zone'
+
+df_time_summary <- df_time_summary %>%
+  group_by(cage, condition, cage_source, mouse) %>%
+  summarise(
+    value = mean(value, na.rm = TRUE), 
+    .groups = "drop"
+  )
+
+df_visits_summary <- df_visits_summary %>%
+  mutate(condition = if_else(str_detect(zone, "light"), "light", "dark"))
+
+# Suponiendo que tienes una columna 'condition' con "light" o "dark" y una columna 'zone'
+
+df_visits_summary <- df_visits_summary %>%
+  group_by(cage, condition,cage_source, mouse) %>%
+  summarise(
+    value = mean(value, na.rm = TRUE), 
+    .groups = "drop"
+  )
+
+
 # Calcular posiciones de separación
 cage_change_positions <- df_visits_summary %>%
   distinct(cage, cage_source) %>%
@@ -161,7 +186,8 @@ cage_change_positions <- df_visits_summary %>%
   mutate(pos = match(last_pos, cage_source_levels) + 0.5) %>%
   filter(row_number() != n()) # quitar última línea innecesaria
 
-zones <- unique(df_visits_summary$zone)
+
+zones <- unique(df_visits_summary$condition)
 
 values_visits <- df_visits_summary$value
 y_min_visits <- min(values_visits, na.rm = TRUE) * 0.9
@@ -182,7 +208,7 @@ shape_values <- setNames(shapes, mouse_levels)
 for (z in zones) {
   # Visits
   p_visits <- df_visits_summary %>%
-    filter(zone == z) %>%
+    filter(condition == z) %>%
     ggplot(aes(x = cage_source, y = value, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
@@ -202,7 +228,7 @@ for (z in zones) {
 
   # Time
   p_time <- df_time_summary %>%
-    filter(zone == z) %>%
+    filter(condition == z) %>%
     ggplot(aes(x = cage_source, y = value / 60, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
@@ -339,14 +365,10 @@ df_time_summary <- df_long_combined %>%
 clean_source <- function(x) {
   parts <- str_split(x, "_", simplify = TRUE) %>% as.character()
   len <- length(parts)
-
-  if (len > 2) {
-    parts <- parts[1:(len - 2)]
-  }
-  if (length(parts) > 4) {
-    parts <- parts[-(1:4)]
-  } else {
-    parts <- character(0)
+  
+  # Quitar las últimas 2
+  if (len > 1) {
+    parts <- parts[1:(len - 1)]
   }
   if (length(parts) == 0) {
     return("short")
@@ -367,6 +389,18 @@ cage_source_levels <- df_time_summary %>%
 df_time_summary <- df_time_summary %>%
   mutate(cage_source = factor(cage_source, levels = cage_source_levels))
 
+df_time_summary <- df_time_summary %>%
+  mutate(condition = if_else(str_detect(zone, "light"), "light", "dark"))
+
+# Suponiendo que tienes una columna 'condition' con "light" o "dark" y una columna 'zone'
+
+df_time_summary <- df_time_summary %>%
+  group_by(cage, condition, cage_source, mouse) %>%
+  summarise(
+    value = mean(value, na.rm = TRUE), 
+    .groups = "drop"
+  )
+
 cage_change_positions <- df_time_summary %>%
   distinct(cage, cage_source) %>%
   group_by(cage) %>%
@@ -386,12 +420,12 @@ y_min <- min(time_values_hours, na.rm = TRUE) * 0.9
 y_max <- max(time_values_hours, na.rm = TRUE) * 1.1
 
 # 10. Crear plots para cada zona con líneas verticales para separar jaulas/condiciones
-zones <- unique(df_time_summary$zone)
+zones <- unique(df_time_summary$condition)
 plots_time <- list()
 
 for (z in zones) {
   p <- df_time_summary %>%
-    filter(zone == z) %>%
+    filter(condition == z) %>%
     ggplot(aes(x = cage_source, y = value / 3600, color = mouse, shape = mouse)) +
     geom_point(size = 3, position = position_jitter(width = 0.2)) +
     scale_shape_manual(values = shape_values) +
@@ -417,10 +451,13 @@ grid.arrange(grobs = plots_time, ncol = 1)
 # Sociability
 
 ```{r, fig.width=20, fig.height=10}
-df_list_solitude <- df_list_all[grepl("sociability", names(df_list_all))]
 
-df_long_combined <- imap_dfr(df_list_solitude, ~ mutate(.x, source_df = .y))
+# 1. Filtrar datasets de sociabilidad
+df_list_sociability <- df_list_all[grepl("sociability", names(df_list_all))]
 
+df_long_combined <- imap_dfr(df_list_sociability, ~ mutate(.x, source_df = .y))
+
+# 2. Función para limpiar nombre de source
 clean_source <- function(x) {
   parts <- str_split(x, "_", simplify = TRUE) %>% as.character()
   len <- length(parts)
@@ -430,69 +467,49 @@ clean_source <- function(x) {
   paste(parts, collapse = "_")
 }
 
+# 3. Limpiar source y mantener columnas relevantes
 df_long_combined <- df_long_combined %>%
-  mutate(source_clean = sapply(source_df, clean_source),
-         time_days = time) %>%
+  mutate(
+    source_clean = sapply(source_df, clean_source),
+    time_days = time
+  ) %>%
   filter(!is.na(time_days))
 
-# Normalizar todos los grupos a 10 bins
-reduce_to_10_bins <- function(df_group) {
-  bins <- 10
-  df_group %>%
-    mutate(bin = ntile(time_days, bins)) %>%
-    group_by(mouse, source_clean, zone, bin) %>%
-    summarize(
-      time_days = mean(time_days),
-      value = mean(value),
-      source_df = first(source_df),
-      .groups = "drop"
-    )
-}
-library(purrr)
-
-df_groups <- df_long_combined %>%
-  group_by(mouse, source_df, zone) %>%
-  group_split()
-
-df_reduced_list <- map(df_groups, ~ reduce_to_10_bins(.x))
-
-df_long_reduced <- bind_rows(df_reduced_list)
-
-
-# Graficar igual que antes
-mice <- unique(df_long_reduced$mouse)
-zone_palette <- hue_pal()(length(unique(df_long_reduced$zone)))
-names(zone_palette) <- unique(df_long_reduced$zone)
-
-library(cowplot)
+# 4. Preparar graficado igual que antes pero SIN BINS
+mice <- unique(df_long_combined$mouse)
+zone_palette <- hue_pal()(length(unique(df_long_combined$zone)))
+names(zone_palette) <- unique(df_long_combined$zone)
 
 plots <- list()
+
 for (m in mice) {
-  df_mouse <- df_long_reduced %>% filter(mouse == m)
+  df_mouse <- df_long_combined %>% filter(mouse == m)
 
   # Niveles únicos y bloques
   source_df_levels <- unique(df_mouse$source_df)
   n_blocks <- length(source_df_levels)
 
-  # Mapear formas únicas por zona (máx 10 formas)
+  # Mapear formas únicas por zona
   zone_levels <- unique(df_mouse$zone)
-  shape_vals <- seq_along(zone_levels) %% 25  # 0:24 shapes disponibles en ggplot
+  shape_vals <- seq_along(zone_levels) %% 25  # hasta 24 formas ggplot
 
+  # Asignar bloque y offset en eje x
   df_mouse <- df_mouse %>%
     mutate(
       source_df = factor(source_df, levels = source_df_levels),
       block = as.numeric(source_df),
-      bin_offset = bin + (block - 1) * 10,
+      x_offset = time_days + (block - 1) * max(time_days, na.rm = TRUE),
       zone = factor(zone, levels = zone_levels)
     )
 
-  p <- ggplot(df_mouse, aes(x = bin_offset, y = value, color = zone, shape = zone)) +
+  # Graficar
+  p <- ggplot(df_mouse, aes(x = x_offset, y = value, color = zone, shape = zone)) +
     geom_point(size = 2, alpha = 0.8) +
     scale_color_manual(values = zone_palette) +
     scale_shape_manual(values = shape_vals) +
     labs(
       title = paste("Mouse:", m),
-      x = "Bin (offset by condition)",
+      x = "Time (days, offset by condition)",
       y = "Value",
       color = "Zone",
       shape = "Zone"
@@ -500,13 +517,13 @@ for (m in mice) {
     theme_minimal(base_size = 14) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-  # ➤ Líneas de tendencia separadas por bloque
+  # ➤ Añadir líneas de tendencia separadas por bloque
   for (b in seq_len(n_blocks)) {
     df_block <- df_mouse %>% filter(block == b)
     p <- p +
       geom_smooth(
         data = df_block,
-        aes(x = bin_offset, y = value, color = zone),
+        aes(x = x_offset, y = value, color = zone),
         method = "lm",
         se = FALSE,
         linewidth = 0.8
@@ -514,13 +531,29 @@ for (m in mice) {
   }
 
   # ➤ Líneas verticales de separación entre bloques
-  offset_map <- seq(0, by = 10, length.out = n_blocks + 1)
-  vlines <- offset_map[-c(1, length(offset_map))]
-  for (v in vlines) {
+  offset_sep <- (1:(n_blocks - 1)) * max(df_mouse$time_days, na.rm = TRUE)
+  for (v in offset_sep) {
     p <- p + geom_vline(xintercept = v, linetype = "dashed", color = "grey50")
   }
+  
+  # ➤ Añadir etiquetas de bloque debajo
+  block_max <- max(df_mouse$time_days, na.rm = TRUE)
+  x_label_pos <- (seq_len(n_blocks) - 0.5) * block_max
+  
+  for (i in seq_len(n_blocks)) {
+    p <- p +
+      annotate(
+        "text",
+        x = x_label_pos[i],
+        y = min(df_mouse$value, na.rm = TRUE) - 0.05 * diff(range(df_mouse$value, na.rm = TRUE)),
+        label = label_names[i],
+        size = 4,
+        vjust = 1
+      )
+  }
 
-  # ➤ Etiquetas debajo del eje x con ggdraw
+
+  # ➤ Etiquetas de bloque debajo
   label_names <- as.character(source_df_levels)
   x_rel <- (seq_len(n_blocks) - 0.5) / n_blocks
 
@@ -531,8 +564,8 @@ for (m in mice) {
       text = label_names,
       x = x_rel,
       y = 0,
-      angle = 0,         # horizontal
-      vjust = 1,         # alineado en la base
+      angle = 0,
+      vjust = 1,
       size = 4
     )
 
